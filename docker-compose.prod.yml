@@ -1,0 +1,61 @@
+# Same-origin demo behind Caddy. Unsigned Stripe webhooks stay rejected.
+# Requires Docker Compose v2.24+ for the !override and !reset tags.
+
+services:
+  postgres:
+    container_name: billing-postgres
+    ports: !reset []
+    restart: unless-stopped
+
+  redis:
+    ports: !reset []
+    restart: unless-stopped
+
+  migrate:
+    command: ["sh", "-c", "pnpm db:migrate && pnpm db:seed"]
+    environment:
+      DATABASE_URL: postgresql://fb3:fb3@postgres:5432/fb3
+
+  api:
+    container_name: billing-api
+    ports: !reset []
+    restart: unless-stopped
+    env_file: !override
+      - .env.production
+    environment:
+      DATABASE_URL: postgresql://fb3:fb3@postgres:5432/fb3
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+      PUBLIC_DEMO: "true"
+      LOCAL_DEMO_MODE: "false"
+      WEB_ORIGIN: ${WEB_ORIGIN}
+    networks:
+      default: {}
+      edge:
+        aliases: [billing-api]
+
+  worker:
+    restart: unless-stopped
+    env_file: !override
+      - .env.production
+    environment:
+      DATABASE_URL: postgresql://fb3:fb3@postgres:5432/fb3
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+
+  web:
+    container_name: billing-web
+    ports: !reset []
+    restart: unless-stopped
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: same-origin
+    networks:
+      default: {}
+      edge:
+        aliases: [billing-web]
+
+networks:
+  edge:
+    external: true
+    name: portfolio-edge

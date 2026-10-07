@@ -1,0 +1,9 @@
+{
+  "name": "@fb3/metering",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "lint": "tsc -p tsconfig.json --noEmit", "test": "vitest run src --testTimeout=30000 --hookTimeout=30000" },
+  "dependencies": { "ioredis": "latest" }
+}

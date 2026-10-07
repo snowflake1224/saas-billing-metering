@@ -1,0 +1,35 @@
+{
+  "name": "@fb3/api",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests --testTimeout=30000 --hookTimeout=30000"
+  },
+  "dependencies": {
+    "@fb3/contracts": "workspace:*",
+    "@fb3/database": "workspace:*",
+    "@fb3/metering": "workspace:*",
+    "@nestjs/common": "latest",
+    "@nestjs/core": "latest",
+    "@nestjs/platform-express": "latest",
+    "argon2": "latest",
+    "bullmq": "latest",
+    "cookie-parser": "latest",
+    "express": "latest",
+    "ioredis": "latest",
+    "jose": "latest",
+    "pino": "latest",
+    "pino-http": "latest",
+    "prom-client": "latest",
+    "reflect-metadata": "latest",
+    "rxjs": "latest",
+    "stripe": "latest",
+    "uuid": "latest"
+  },
+  "devDependencies": { "@types/cookie-parser": "latest", "@types/express": "latest", "supertest": "latest", "@types/supertest": "latest", "tsx": "latest" }
+}

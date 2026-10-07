@@ -1,0 +1,22 @@
+{
+  "name": "fb-3-billing-metering",
+  "private": true,
+  "packageManager": "pnpm@10.12.1",
+  "scripts": {
+    "build": "turbo build",
+    "dev": "turbo dev",
+    "lint": "turbo lint",
+    "typecheck": "turbo typecheck",
+    "test": "turbo test",
+    "format": "prettier --write .",
+    "db:migrate": "pnpm --filter @fb3/database migrate",
+    "db:seed": "pnpm --filter @fb3/database seed"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "prettier": "latest",
+    "turbo": "latest",
+    "typescript": "5.9.3",
+    "vitest": "latest"
+  }
+}

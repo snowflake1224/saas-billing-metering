@@ -1,0 +1,8 @@
+{
+  "name": "@fb3/web",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": { "dev": "next dev", "build": "next build", "start": "next start", "lint": "tsc --noEmit", "typecheck": "tsc --noEmit", "test": "vitest run app --passWithNoTests", "test:e2e": "playwright test" },
+  "dependencies": { "lucide-react": "latest", "next": "latest", "react": "latest", "react-dom": "latest", "recharts": "latest" },
+  "devDependencies": { "@playwright/test": "latest", "@tailwindcss/postcss": "latest", "@types/react": "latest", "@types/react-dom": "latest", "autoprefixer": "latest", "postcss": "latest", "tailwindcss": "latest", "typescript": "5.9.3" }
+}
