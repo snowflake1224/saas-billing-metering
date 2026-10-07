@@ -22,7 +22,12 @@ services:
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_healthy }
-    healthcheck: { test: ["CMD", "wget", "-qO-", "http://localhost:4000/health"], interval: 10s, timeout: 5s, retries: 10 }
+    healthcheck: { test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4000/health"], interval: 10s, timeout: 5s, retries: 10 }
+    networks:
+      default:
+      edge:
+        aliases:
+          - billing-api
   migrate:
     build: { context: ., dockerfile: apps/api/Dockerfile }
     command: pnpm db:migrate
@@ -48,4 +53,13 @@ services:
     ports: ["3000:3000"]
     depends_on:
       api: { condition: service_healthy }
+    networks:
+      default:
+      edge:
+        aliases:
+          - billing-web
 volumes: { pgdata: {}, redisdata: {} }
+networks:
+  edge:
+    external: true
+    name: portfolio-edge
