@@ -7,9 +7,9 @@ export default defineConfig({
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: [
     {
-      command: "pnpm --dir ../api dev",
+      command: "corepack pnpm --dir ../api dev",
       url: "http://127.0.0.1:4100/health",
-      reuseExistingServer: true,
+      reuseExistingServer: false,
       timeout: 180_000,
       env: {
         DATABASE_URL: process.env.DATABASE_URL ?? "postgresql://fb3:fb3@localhost:55432/fb3",
@@ -17,13 +17,15 @@ export default defineConfig({
         JWT_ACCESS_SECRET: "e2e-access-secret-at-least-32-characters",
         JWT_REFRESH_SECRET: "e2e-refresh-secret-at-least-32-characters",
         LOCAL_DEMO_MODE: "true",
+        PUBLIC_DEMO: "true",
+        WEB_ORIGIN: "http://127.0.0.1:3100",
         PORT: "4100",
       },
     },
     {
-      command: "pnpm exec next dev -p 3100",
+      command: "corepack pnpm exec next dev -p 3100",
       url: "http://127.0.0.1:3100",
-      reuseExistingServer: true,
+      reuseExistingServer: false,
       timeout: 180_000,
       env: { NEXT_PUBLIC_API_URL: "http://127.0.0.1:4100" },
     },

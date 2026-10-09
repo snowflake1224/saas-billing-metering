@@ -1,4 +1,5 @@
 import { z } from "zod";
+export { ZodError } from "zod";
 
 export const metricSchema = z.enum(["api_requests", "storage_gb", "seats", "ai_tokens"]);
 export type Metric = z.infer<typeof metricSchema>;

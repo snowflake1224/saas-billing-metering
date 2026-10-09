@@ -23,6 +23,37 @@ describe("API integration", () => {
     expect(response.headers["set-cookie"][0]).toContain("HttpOnly");
   });
 
+  it("returns structured validation errors", async () => {
+    const response = await supertest(app.getHttpServer()).post("/auth/login")
+      .send({ email: "not-an-email", password: "" }).expect(400);
+    expect(response.body).toMatchObject({ statusCode: 400, message: "Invalid request" });
+    expect(response.body.issues.length).toBeGreaterThan(0);
+  });
+
+  it("advertises and enforces protected public-demo capabilities", async () => {
+    process.env.PUBLIC_DEMO = "true";
+    try {
+      const capabilities = await supertest(app.getHttpServer()).get("/capabilities")
+        .set("authorization", `Bearer ${accessToken}`).expect(200);
+      expect(capabilities.body).toMatchObject({
+        protectedDemo: true,
+        permissions: { simulateUsage: true, manageWorkspace: false, replayJobs: false },
+      });
+      const mutation = await supertest(app.getHttpServer()).post("/teams")
+        .set("authorization", `Bearer ${accessToken}`).send({ name: "Should not exist" }).expect(403);
+      expect(mutation.body.message).toContain("protected public demo");
+    } finally {
+      delete process.env.PUBLIC_DEMO;
+    }
+  });
+
+  it("serves the populated dashboard through injected billing services", async () => {
+    const response = await supertest(app.getHttpServer()).get("/dashboard")
+      .set("authorization", `Bearer ${accessToken}`).expect(200);
+    expect(response.body.plan).toMatchObject({ code: "pro", name: "Pro" });
+    expect(response.body.usage).toEqual(expect.arrayContaining([expect.objectContaining({ metric: "api_requests" })]));
+  });
+
   it("reserves quota and keeps duplicate ingestion idempotent", async () => {
     const event = { idempotencyKey: `api-test-${Date.now()}`, metric: "api_requests", quantity: 2, occurredAt: new Date().toISOString(), dimensions: { test: "true" } };
     const first = await supertest(app.getHttpServer()).post("/usage/events").set("authorization", `Bearer ${accessToken}`).send(event).expect(201);

@@ -8,7 +8,7 @@
     "start": "node dist/main.js",
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests --testTimeout=30000 --hookTimeout=30000"
+    "test": "vitest run src --passWithNoTests --testTimeout=30000 --hookTimeout=30000"
   },
   "dependencies": {
     "@fb3/contracts": "workspace:*",

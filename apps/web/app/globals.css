@@ -11,19 +11,11 @@ body {
 .glass { background: rgba(15, 23, 38, .72); border: 1px solid rgba(148, 163, 184, .13); box-shadow: 0 24px 70px rgba(0,0,0,.22); backdrop-filter: blur(18px); }
 .metric { transition: transform .2s, border-color .2s; }
 .metric:hover { transform: translateY(-2px); border-color: rgba(99, 135, 255, .45); }
-@import "tailwindcss";
 
-:root { color-scheme: dark; }
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  color: #e8eef8;
-  background:
-    radial-gradient(circle at 15% -10%, rgba(54, 113, 255, .2), transparent 34rem),
-    radial-gradient(circle at 100% 20%, rgba(15, 210, 184, .08), transparent 25rem),
-    #070b13;
-  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+button, select, input, a { outline: none; }
+button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible {
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, .45);
 }
-.glass { background: rgba(15, 23, 38, .72); border: 1px solid rgba(148, 163, 184, .13); box-shadow: 0 24px 70px rgba(0,0,0,.22); backdrop-filter: blur(18px); }
-.metric { transition: transform .2s, border-color .2s; }
-.metric:hover { transform: translateY(-2px); border-color: rgba(99, 135, 255, .45); }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+::selection { background: rgba(59, 130, 246, .55); color: white; }

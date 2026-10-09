@@ -2,12 +2,24 @@
 
 Portfolio-grade multi-tenant usage billing: Next.js dashboard, NestJS API, BullMQ worker, PostgreSQL RLS, Redis atomic quotas, and optional Stripe test-mode billing.
 
+## Demo tour
+
+Sign in with `demo@fb3.local` / `DemoPass123!`, then:
+
+1. **Overview:** inspect realistic monthly entitlements and the live API-request chart.
+2. **Simulate usage:** send an idempotent event through Redis quota reservation, the PostgreSQL outbox, BullMQ, and hourly aggregation.
+3. **Members and Teams:** inspect role-based collaboration and seat allocation.
+4. **Billing:** compare versioned plans, preview an invoice, and follow the safe checkout result flow.
+5. **Admin:** inspect active overrides, audit evidence, operational status, and DLQ health.
+
+Production demo deployments set `PUBLIC_DEMO=true`. The API—not only the UI—then blocks organization, member, invitation, team, plan, entitlement, and replay mutations. Usage simulation and demo checkout remain interactive, while shared records remain stable for the next visitor. Set `PUBLIC_DEMO=false` in a private environment to restore normal role-authorized management.
+
 ## Quick start
 
 ```bash
 cp .env.example .env
 docker compose up -d postgres redis
-pnpm install
+corepack pnpm install
 pnpm build
 pnpm db:migrate
 pnpm db:seed
@@ -28,6 +40,13 @@ Open http://localhost:3000. Seed login: `demo@fb3.local` / `DemoPass123!`. The U
 
 Usage ingestion atomically reserves quota before inserting the immutable event and outbox row. It commits the Redis reservation only after PostgreSQL commits, releases on duplicate/failure, returns 80% soft-limit warnings, and applies the configured open/closed dependency-failure policy. The publisher locks unpublished rows, queues them with the outbox ID, then marks them published. The consumer records `(consumer,event_id)` before updating hourly aggregates.
 
+```text
+Dashboard -> NestJS ingest -> Redis quota -> PostgreSQL event + outbox
+                                              |
+                                              v
+                                    BullMQ worker -> hourly aggregate -> dashboard
+```
+
 The PostgreSQL analytics implementation queries `usage_aggregates` behind `AnalyticsAdapter`; BigQuery or ClickHouse can implement that interface without changing product APIs.
 
 ## Security and threat model
@@ -44,6 +63,7 @@ The PostgreSQL analytics implementation queries `usage_aggregates` behind `Analy
 ## Operations runbook
 
 - **Health:** `GET /health`; scrape `GET /metrics`. Alert on API 5xx, outbox oldest-unpublished age, DLQ depth, reconciliation mismatches, Redis latency, and SQL saturation.
+- **Public demo:** keep `PUBLIC_DEMO=true`, `LOCAL_DEMO_MODE=false`, and strong JWT secrets. The repeatable seed refreshes the portfolio workspace without duplicating sample records.
 - **Replay:** owners/admins inspect `GET /admin/dlq` and replay a repaired job with `POST /admin/dlq/:id/replay`; the API removes it from DLQ only after enqueue succeeds.
 - **Reconcile:** the worker recomputes expected hourly buckets from immutable events, upserts mismatches, removes orphan buckets, and reports repair counts at `/metrics`.
 - **Stripe incident:** retain the raw event in `stripe_events`; correct configuration, clear its error, and replay with Stripe CLI. Never synthesize event signatures.

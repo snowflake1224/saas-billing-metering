@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import {
-  Body, Controller, Delete, Get, Headers, HttpException, Injectable, Module, Param, Patch, Post, Req, Res,
+  ArgumentsHost, Body, Catch, Controller, Delete, ExceptionFilter, Get, Headers, HttpException, Inject, Injectable, Module, Param, Patch, Post, Req, Res,
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import express, { Request, Response } from "express";
@@ -15,12 +15,12 @@ import pinoHttp from "pino-http";
 import { Redis } from "ioredis";
 import { Queue } from "bullmq";
 import { pool, healthcheck, tenantTransaction } from "@fb3/database";
-import { loginSchema, usageEventSchema } from "@fb3/contracts";
+import { loginSchema, usageEventSchema, ZodError } from "@fb3/contracts";
 import { PostgresAnalyticsAdapter, QuotaService } from "@fb3/metering";
 
 const production = process.env.NODE_ENV === "production";
 const demoMode = process.env.LOCAL_DEMO_MODE === "true" && !production;
-const portfolioDemo = process.env.PUBLIC_DEMO === "true";
+const isPublicDemo = () => process.env.PUBLIC_DEMO === "true";
 const webOrigin = process.env.WEB_ORIGIN ?? "http://localhost:3000";
 const accessSecret = new TextEncoder().encode(process.env.JWT_ACCESS_SECRET ?? "local-access-secret-change-me-32chars");
 const refreshSecret = new TextEncoder().encode(process.env.JWT_REFRESH_SECRET ?? "local-refresh-secret-change-me-32chars");
@@ -47,6 +47,21 @@ type AuthContext = { sub: string; organizationId: string; role: Role; email: str
 type AuthedRequest = Request & { auth?: AuthContext };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const cookieOptions = { httpOnly: true, sameSite: "lax" as const, secure: production, path: "/", maxAge: 30 * 86400000 };
+
+function requireWritableWorkspace() {
+  if (isPublicDemo()) throw new HttpException("This action is disabled in the protected public demo", 403);
+}
+
+@Catch(ZodError)
+class ZodExceptionFilter implements ExceptionFilter {
+  catch(error: ZodError, host: ArgumentsHost) {
+    host.switchToHttp().getResponse<Response>().status(400).json({
+      statusCode: 400,
+      message: "Invalid request",
+      issues: error.issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })),
+    });
+  }
+}
 
 async function authorize(req: AuthedRequest, allowed?: Role[]): Promise<AuthContext> {
   const token = req.headers.authorization?.replace(/^Bearer /, "");
@@ -144,7 +159,7 @@ export class BillingService {
 
 @Controller()
 export class AppController {
-  constructor(private readonly billing: BillingService) {}
+  constructor(@Inject(BillingService) private readonly billing: BillingService) {}
 
   @Get("health")
   async health() {
@@ -158,6 +173,23 @@ export class AppController {
 
   @Get("metrics")
   async metrics(@Res() res: Response) { res.type(registry.contentType).send(await registry.metrics()); }
+
+  @Get("capabilities")
+  async capabilities(@Req() req: AuthedRequest) {
+    const c = await authorize(req);
+    const protectedDemo = isPublicDemo();
+    return {
+      protectedDemo,
+      role: c.role,
+      permissions: {
+        simulateUsage: true,
+        checkoutPreview: ["owner", "billing"].includes(c.role),
+        manageWorkspace: !protectedDemo && ["owner", "admin"].includes(c.role),
+        manageBilling: !protectedDemo && ["owner", "billing"].includes(c.role),
+        replayJobs: !protectedDemo && ["owner", "admin"].includes(c.role),
+      },
+    };
+  }
 
   @Post("auth/login")
   async login(@Body() input: unknown, @Res({ passthrough: true }) res: Response) {
@@ -213,6 +245,7 @@ export class AppController {
   @Post("organizations")
   async createOrganization(@Req() req: AuthedRequest, @Body() body: { name: string; slug: string }) {
     const c = await authorize(req);
+    requireWritableWorkspace();
     if (!body.name?.trim() || !/^[a-z0-9-]{3,50}$/.test(body.slug)) throw new HttpException("invalid organization", 400);
     const client = await pool.connect();
     try {
@@ -239,12 +272,17 @@ export class AppController {
 
   @Get("dashboard")
   async dashboard(@Req() req: AuthedRequest) {
-    const c = await authorize(req);
-    const plan = await this.billing.entitlements(c.organizationId);
-    const usage = await tenantTransaction(c.organizationId, c.sub, async (db) =>
-      (await db.query("SELECT metric,sum(quantity)::bigint AS used FROM usage_aggregates WHERE bucket_start>=date_trunc('month',now()) GROUP BY metric")).rows,
-    );
-    return { plan, usage, organizationId: c.organizationId };
+    try {
+      const c = await authorize(req);
+      const plan = await this.billing.entitlements(c.organizationId);
+      const usage = await tenantTransaction(c.organizationId, c.sub, async (db) =>
+        (await db.query("SELECT metric,sum(quantity)::bigint AS used FROM usage_aggregates WHERE bucket_start>=date_trunc('month',now()) GROUP BY metric")).rows,
+      );
+      return { plan, usage, organizationId: c.organizationId };
+    } catch (error) {
+      log.error({ err: error }, "dashboard query failed");
+      throw error;
+    }
   }
 
   @Get("analytics/usage")
@@ -257,6 +295,13 @@ export class AppController {
   async ingest(@Req() req: AuthedRequest, @Body() input: unknown) {
     const c = await authorize(req);
     const event = usageEventSchema.parse(input);
+    if (isPublicDemo()) {
+      if (event.metric === "seats" || event.quantity > 500) throw new HttpException("Demo simulations are limited to 500 non-seat units", 400);
+      const demoRateKey = `public-demo-events:${new Date().toISOString().slice(0, 10)}`;
+      const demoEvents = await redis.incr(demoRateKey);
+      if (demoEvents === 1) await redis.expire(demoRateKey, 86400);
+      if (demoEvents > 50) throw new HttpException("The public demo simulation limit has been reached for today", 429);
+    }
     const plan = await this.billing.entitlements(c.organizationId);
     const limit = Number(plan?.entitlements?.[event.metric] ?? 0);
     if (!limit) throw new HttpException(`metric ${event.metric} is not entitled`, 403);
@@ -296,6 +341,7 @@ export class AppController {
   @Patch("members/:userId")
   async updateMember(@Req() req: AuthedRequest, @Param("userId") userId: string, @Body() body: { role: Role }) {
     const c = await authorize(req, ["owner", "admin"]);
+    requireWritableWorkspace();
     if (!["owner", "admin", "billing", "member"].includes(body.role)) throw new HttpException("invalid role", 400);
     if (body.role === "owner" && c.role !== "owner") throw new HttpException("only owners can grant owner", 403);
     await tenantTransaction(c.organizationId, c.sub, (db) => db.query("UPDATE memberships SET role=$3 WHERE organization_id=$1 AND user_id=$2 RETURNING *", [c.organizationId, userId, body.role]));
@@ -306,6 +352,7 @@ export class AppController {
   @Delete("members/:userId")
   async removeMember(@Req() req: AuthedRequest, @Param("userId") userId: string) {
     const c = await authorize(req, ["owner", "admin"]);
+    requireWritableWorkspace();
     const member = await pool.query("SELECT role FROM memberships WHERE organization_id=$1 AND user_id=$2", [c.organizationId, userId]);
     if (member.rows[0]?.role === "owner") {
       const owners = await pool.query("SELECT count(*)::int count FROM memberships WHERE organization_id=$1 AND role='owner'", [c.organizationId]);
@@ -326,18 +373,29 @@ export class AppController {
   @Post("invitations")
   async invite(@Req() req: AuthedRequest, @Body() body: { email: string; role: Role }) {
     const c = await authorize(req, ["owner", "admin"]);
+    requireWritableWorkspace();
     if (!body.email?.includes("@") || !["admin", "billing", "member"].includes(body.role)) throw new HttpException("invalid invitation", 400);
+    const plan = await this.billing.entitlements(c.organizationId);
+    const seats = Number(plan?.entitlements?.seats ?? 0);
+    const occupied = await pool.query(
+      `SELECT
+        (SELECT count(*)::int FROM memberships WHERE organization_id=$1) +
+        (SELECT count(*)::int FROM invitations WHERE organization_id=$1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>now()) AS count`,
+      [c.organizationId],
+    );
+    if (seats > 0 && occupied.rows[0].count >= seats) throw new HttpException("seat entitlement exceeded", 409);
     const token = randomBytes(32).toString("base64url");
     const invitation = await tenantTransaction(c.organizationId, c.sub, async (db) =>
       (await db.query("INSERT INTO invitations(organization_id,email,role,token_hash,expires_at) VALUES($1,lower($2),$3,$4,now()+interval '7 days') RETURNING id,email,role,expires_at", [c.organizationId, body.email, body.role, hash(token)])).rows[0],
     );
     await audit(c.organizationId, c.sub, "invitation.created", "invitation", invitation.id, { email: invitation.email, role: body.role });
-    return { ...invitation, token: demoMode ? token : undefined, acceptUrl: demoMode ? `http://localhost:3000?invite=${token}` : undefined };
+    return { ...invitation, token: demoMode ? token : undefined, acceptUrl: demoMode ? `${webOrigin}?invite=${token}` : undefined };
   }
 
   @Post("invitations/accept")
   async acceptInvitation(@Req() req: AuthedRequest, @Body() body: { token: string }) {
     const c = await authorize(req);
+    requireWritableWorkspace();
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -355,6 +413,7 @@ export class AppController {
   @Delete("invitations/:id")
   async revokeInvitation(@Req() req: AuthedRequest, @Param("id") id: string) {
     const c = await authorize(req, ["owner", "admin"]);
+    requireWritableWorkspace();
     await tenantTransaction(c.organizationId, c.sub, (db) => db.query("UPDATE invitations SET revoked_at=now() WHERE id=$1 AND accepted_at IS NULL", [id]));
     await audit(c.organizationId, c.sub, "invitation.revoked", "invitation", id);
     return { revoked: true };
@@ -369,6 +428,7 @@ export class AppController {
   @Post("teams")
   async createTeam(@Req() req: AuthedRequest, @Body() body: { name: string }) {
     const c = await authorize(req, ["owner", "admin"]);
+    requireWritableWorkspace();
     const team = await tenantTransaction(c.organizationId, c.sub, async (db) => (await db.query("INSERT INTO teams(organization_id,name) VALUES($1,$2) RETURNING *", [c.organizationId, body.name.trim()])).rows[0]);
     await audit(c.organizationId, c.sub, "team.created", "team", team.id);
     return team;
@@ -377,6 +437,7 @@ export class AppController {
   @Patch("teams/:id")
   async updateTeam(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: { name: string }) {
     const c = await authorize(req, ["owner", "admin"]);
+    requireWritableWorkspace();
     await tenantTransaction(c.organizationId, c.sub, (db) => db.query("UPDATE teams SET name=$2 WHERE id=$1", [id, body.name.trim()]));
     await audit(c.organizationId, c.sub, "team.updated", "team", id);
     return { updated: true };
@@ -385,6 +446,7 @@ export class AppController {
   @Delete("teams/:id")
   async deleteTeam(@Req() req: AuthedRequest, @Param("id") id: string) {
     const c = await authorize(req, ["owner", "admin"]);
+    requireWritableWorkspace();
     await tenantTransaction(c.organizationId, c.sub, (db) => db.query("DELETE FROM teams WHERE id=$1", [id]));
     await audit(c.organizationId, c.sub, "team.deleted", "team", id);
     return { deleted: true };
@@ -393,6 +455,7 @@ export class AppController {
   @Post("teams/:id/members/:userId")
   async addTeamMember(@Req() req: AuthedRequest, @Param("id") id: string, @Param("userId") userId: string) {
     const c = await authorize(req, ["owner", "admin"]);
+    requireWritableWorkspace();
     await tenantTransaction(c.organizationId, c.sub, (db) => db.query(`INSERT INTO team_members(organization_id,team_id,user_id)
       SELECT $1,$2,$3 WHERE EXISTS(SELECT 1 FROM memberships WHERE organization_id=$1 AND user_id=$3) ON CONFLICT DO NOTHING`, [c.organizationId, id, userId]));
     await audit(c.organizationId, c.sub, "team.member_added", "team", id, { userId });
@@ -402,6 +465,7 @@ export class AppController {
   @Delete("teams/:id/members/:userId")
   async removeTeamMember(@Req() req: AuthedRequest, @Param("id") id: string, @Param("userId") userId: string) {
     const c = await authorize(req, ["owner", "admin"]);
+    requireWritableWorkspace();
     await tenantTransaction(c.organizationId, c.sub, (db) => db.query("DELETE FROM team_members WHERE team_id=$1 AND user_id=$2", [id, userId]));
     await audit(c.organizationId, c.sub, "team.member_removed", "team", id, { userId });
     return { removed: true };
@@ -416,6 +480,7 @@ export class AppController {
   @Post("plans/:code/select")
   async selectPlan(@Req() req: AuthedRequest, @Param("code") code: string) {
     const c = await authorize(req, ["owner", "billing"]);
+    requireWritableWorkspace();
     const updated = await tenantTransaction(c.organizationId, c.sub, (db) => db.query(`UPDATE subscriptions SET plan_version_id=(
       SELECT id FROM plan_versions WHERE code=$2 AND active_until IS NULL ORDER BY version DESC LIMIT 1)
       WHERE organization_id=$1 RETURNING *`, [c.organizationId, code]));
@@ -433,6 +498,7 @@ export class AppController {
   @Post("admin/overrides")
   async createOverride(@Req() req: AuthedRequest, @Body() body: { key: string; value: number; reason: string; startsAt: string; endsAt: string }) {
     const c = await authorize(req, ["owner", "admin"]);
+    requireWritableWorkspace();
     if (new Date(body.endsAt) <= new Date(body.startsAt) || !body.reason?.trim()) throw new HttpException("invalid override window", 400);
     const result = await tenantTransaction(c.organizationId, c.sub, (db) => db.query(
       "INSERT INTO entitlement_overrides(organization_id,key,value,reason,starts_at,ends_at,created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *",
@@ -445,6 +511,7 @@ export class AppController {
   @Patch("admin/overrides/:id")
   async updateOverride(@Req() req: AuthedRequest, @Param("id") id: string, @Body() body: { value: number; reason: string; endsAt: string }) {
     const c = await authorize(req, ["owner", "admin"]);
+    requireWritableWorkspace();
     await tenantTransaction(c.organizationId, c.sub, (db) => db.query("UPDATE entitlement_overrides SET value=$2,reason=$3,ends_at=$4 WHERE id=$1", [id, body.value, body.reason, body.endsAt]));
     await audit(c.organizationId, c.sub, "override.updated", "entitlement_override", id, body);
     return { updated: true };
@@ -453,6 +520,7 @@ export class AppController {
   @Delete("admin/overrides/:id")
   async deleteOverride(@Req() req: AuthedRequest, @Param("id") id: string) {
     const c = await authorize(req, ["owner", "admin"]);
+    requireWritableWorkspace();
     await tenantTransaction(c.organizationId, c.sub, (db) => db.query("DELETE FROM entitlement_overrides WHERE id=$1", [id]));
     await audit(c.organizationId, c.sub, "override.deleted", "entitlement_override", id);
     return { deleted: true };
@@ -474,6 +542,7 @@ export class AppController {
   @Post("admin/dlq/:id/replay")
   async replayDlq(@Req() req: AuthedRequest, @Param("id") id: string) {
     const c = await authorize(req, ["owner", "admin"]);
+    requireWritableWorkspace();
     const job = await dlq.getJob(id);
     if (!job) throw new HttpException("DLQ job not found", 404);
     await usageQueue.add("usage.recorded", job.data.original, { attempts: 5, backoff: { type: "exponential", delay: 1000 } });
@@ -493,7 +562,7 @@ export class AppController {
     const c = await authorize(req);
     const subscription = await pool.query("SELECT stripe_customer_id FROM subscriptions WHERE organization_id=$1", [c.organizationId]);
     if (!stripe || !subscription.rows[0]?.stripe_customer_id) {
-      if (!demoMode && !portfolioDemo) throw new HttpException("Stripe is not configured", 503);
+      if (!demoMode && !isPublicDemo()) throw new HttpException("Stripe is not configured", 503);
       return { mode: "demo", currency: "usd", amountDue: 4900, lines: [{ description: "Pro plan (sample)", amount: 4900 }] };
     }
     const invoice = await stripe.invoices.createPreview({ customer: subscription.rows[0].stripe_customer_id });
@@ -504,14 +573,14 @@ export class AppController {
   async checkout(@Req() req: AuthedRequest, @Body() body: { priceId?: string; planCode?: string }) {
     const c = await authorize(req, ["owner", "billing"]);
     if (!stripe || !body.priceId) {
-      if (!demoMode && !portfolioDemo) throw new HttpException("Stripe checkout is not configured", 503);
+      if (!demoMode && !isPublicDemo()) throw new HttpException("Stripe checkout is not configured", 503);
       return { mode: "demo", url: `${webOrigin}/billing/result?checkout=demo-success` };
     }
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       line_items: [{ price: body.priceId, quantity: 1 }],
-      success_url: "http://localhost:3000/billing/result?checkout=success&session_id={CHECKOUT_SESSION_ID}",
-      cancel_url: "http://localhost:3000/billing/result?checkout=cancel",
+      success_url: `${webOrigin}/billing/result?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${webOrigin}/billing/result?checkout=cancel`,
       client_reference_id: c.organizationId,
       metadata: { organization_id: c.organizationId, plan_code: body.planCode ?? "pro" },
       subscription_data: { metadata: { organization_id: c.organizationId, plan_code: body.planCode ?? "pro" } },
@@ -555,8 +624,14 @@ export async function createApp() {
   app.use("/stripe/webhook", express.raw({ type: "application/json" }));
   app.use(express.json({ limit: "1mb" }));
   app.use(cookieParser());
+  app.useGlobalFilters(new ZodExceptionFilter());
   app.use(pinoHttp({
     logger: log,
+    genReqId: (req, res) => {
+      const requestId = String(req.headers["x-request-id"] ?? randomUUID());
+      res.setHeader("x-request-id", requestId);
+      return requestId;
+    },
     customProps: (req) => ({ requestId: req.id }),
     serializers: { req: (req) => ({ id: req.id, method: req.method, url: req.url }), res: (res) => ({ statusCode: res.statusCode }) },
   }));
@@ -565,11 +640,20 @@ export async function createApp() {
     res.on("finish", () => end({ method: req.method, status: String(res.statusCode) }));
     next();
   });
-  app.enableCors({ origin: process.env.WEB_ORIGIN ?? "http://localhost:3000", credentials: true });
+  app.enableCors({
+    origin: (origin, callback) => {
+      const allowed = !origin || origin === webOrigin || (!production && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin));
+      callback(null, allowed);
+    },
+    credentials: true,
+  });
   return app;
 }
 
 async function bootstrap() {
+  if (production && !isPublicDemo() && (!process.env.JWT_ACCESS_SECRET || !process.env.JWT_REFRESH_SECRET)) {
+    throw new Error("JWT_ACCESS_SECRET and JWT_REFRESH_SECRET are required in production");
+  }
   const app = await createApp();
   await app.listen(Number(process.env.PORT ?? 4000), "0.0.0.0");
   log.info({ port: Number(process.env.PORT ?? 4000) }, "api started");
