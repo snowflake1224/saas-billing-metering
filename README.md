@@ -6,13 +6,17 @@ Portfolio-grade multi-tenant usage billing: Next.js dashboard, NestJS API, BullM
 
 Sign in with `demo@fb3.local` / `DemoPass123!`, then:
 
-1. **Overview:** inspect realistic monthly entitlements and the live API-request chart.
-2. **Simulate usage:** send an idempotent event through Redis quota reservation, the PostgreSQL outbox, BullMQ, and hourly aggregation.
-3. **Members and Teams:** inspect role-based collaboration and seat allocation.
-4. **Billing:** compare versioned plans, preview an invoice, and follow the safe checkout result flow.
-5. **Admin:** inspect active overrides, audit evidence, operational status, and DLQ health.
+1. **Overview:** the system health strip (Postgres, Redis, queue depth, outbox lag, p95 processing, dead letters), quota cards with 24h sparklines, burn rate and exhaustion forecast, live ingestion throughput, and the tenant-isolation context.
+2. **Usage:** a multi-metric timeline (24h/72h/7d/30d, absolute or normalized, CSV export), a month-to-date budget burn-down with limit and 80% soft-alert lines, a 7×24 hour-of-day heatmap, and top dimensions from raw events.
+3. **Simulate usage:** send one event or a burst of ×5/×10, or reuse the idempotency key to watch the API return `duplicate` and release the reservation. Each call shows status, latency, `x-request-id` and the JSON response.
+4. **Events:** browse immutable `usage_events` with stage chips (ingested → published → processed), then open a trace that shows millisecond offsets per stage and the hourly bucket the event landed in.
+5. **Pipeline:** live counters for each stage (outbox pending and lag, BullMQ waiting/active/failed, worker backlog, DLQ), per-minute throughput and p50/p95/p99 end-to-end latency.
+6. **API:** an authenticated playground for the real endpoints with copyable `curl`, request history, and runtime metrics parsed from the Prometheus registry.
+7. **Members, Teams, Billing, Admin:** seat usage and RBAC, invoice line items, a what-if cost estimator across the plan catalog, override windows, expandable DLQ jobs, and a day-grouped audit timeline.
 
-Production demo deployments set `PUBLIC_DEMO=true`. The API—not only the UI—then blocks organization, member, invitation, team, plan, entitlement, and replay mutations. Usage simulation and demo checkout remain interactive, while shared records remain stable for the next visitor. Set `PUBLIC_DEMO=false` in a private environment to restore normal role-authorized management.
+Read-only operations endpoints back these views. Each is tenant-scoped with an explicit `organization_id` filter in addition to RLS: `GET /ops/pipeline`, `GET /ops/metrics`, `GET /quota/status`, `GET /usage/events?limit=&metric=&source=`, `GET /usage/events/:id/trace` and `GET /analytics/usage?range=24h|72h|7d|30d&granularity=hour|day`.
+
+Production demo deployments set `PUBLIC_DEMO=true`. The API—not only the UI—then blocks organization, member, invitation, team, plan, entitlement, and replay mutations. Usage simulation and demo checkout remain interactive, while shared records remain stable for the next visitor. Set `PUBLIC_DEMO=false` in a private environment to restore normal role-authorized management. Simulations are capped at 500 units per event and `PUBLIC_DEMO_DAILY_EVENTS` (default 500) events per day.
 
 ## Quick start
 
@@ -30,10 +34,10 @@ Open http://localhost:3000. Seed login: `demo@fb3.local` / `DemoPass123!`. The U
 
 ## Architecture
 
-- `apps/web`: authenticated Tailwind/Recharts dashboard with distinct Usage, Members, Teams, Billing, and Admin screens plus checkout result handling.
+- `apps/web`: authenticated Tailwind/Recharts operations console (Overview, Usage, Events, Pipeline, API, Members, Teams, Billing, Admin). Shared UI lives in `app/components` and includes an accessible themed listbox, so no native dropdowns are used. The API client and visibility-aware polling live in `app/lib/api.ts`.
 - `apps/api`: rotating sessions/logout, live-membership RBAC, organization and team management, invitations, usage/quota, plans/overrides/audit, DLQ operations, checkout/invoices, verified Stripe lifecycle projection, structured logs, Prometheus metrics, and PostgreSQL/Redis health.
 - `apps/worker`: transactional-outbox publisher, BullMQ aggregate consumer, dedupe, retries, inspectable DLQ, replay, operational health/metrics, and automatic aggregate repair.
-- `packages/database`: ordered `schema_migrations`, forced RLS transaction context, repeatable seed.
+- `packages/database`: ordered `schema_migrations`, forced RLS transaction context, repeatable seed. The seed writes 30 days of raw events with outbox and processed rows and rebuilds aggregates from them, so the hourly reconciler keeps the history.
 - `packages/metering`: Redis Lua hard reservation/commit/release and PostgreSQL `AnalyticsAdapter`.
 - `packages/contracts`: shared Zod API contracts.
 - `infra/terraform`: Cloud Run API/worker, HA Cloud SQL/Redis and Secret Manager. Deploy the web workspace to Vercel.
@@ -68,8 +72,20 @@ The PostgreSQL analytics implementation queries `usage_aggregates` behind `Analy
 - **Reconcile:** the worker recomputes expected hourly buckets from immutable events, upserts mismatches, removes orphan buckets, and reports repair counts at `/metrics`.
 - **Stripe incident:** retain the raw event in `stripe_events`; correct configuration, clear its error, and replay with Stripe CLI. Never synthesize event signatures.
 - **Quota outage:** choose `QUOTA_FAILURE_POLICY=closed` for paid/expensive operations. If temporarily changed to `open`, cap upstream rate and reconcile accepted usage before restoring.
-- **RLS debugging:** reproduce as the application role with `set_config` inside a transaction; never grant the runtime role `BYPASSRLS`.
+- **RLS debugging:** reproduce as the application role with `set_config` inside a transaction; never grant the runtime role `BYPASSRLS`. Superusers bypass RLS even when it is forced, so `DATABASE_URL` for the API and worker should use a `NOSUPERUSER NOBYPASSRLS` role like the `fb3_app` role in `rls.test.ts`, not the `fb3` bootstrap superuser.
 - **Backup:** Cloud SQL PITR daily verification; quarterly restore drill. Redis is rebuildable from PostgreSQL aggregates and active reservations.
+
+## Portfolio deployment (EC2 + Caddy)
+
+`docker-compose.prod.yml` targets the shared `portfolio-demo-deployment` host: it joins the external `portfolio-edge` network, reads `.env.production`, and builds the web image with `NEXT_PUBLIC_API_URL=same-origin` and `API_INTERNAL_URL=http://api:4000`. In that mode the browser only calls `/api/*` on the web origin and Next rewrites it to the API container, so new API routes need no Caddyfile change. Rewrites are baked in at build time, so changing `API_INTERNAL_URL` requires a rebuild.
+
+```bash
+# on the EC2 host, after merging to main
+cd /opt/portfolio/billing && git pull
+cd /opt/portfolio/deploy && bash scripts/up.sh
+```
+
+The `migrate` service applies pending migrations and the repeatable seed before the API starts. Never commit `.env.production`.
 
 ## Verification
 

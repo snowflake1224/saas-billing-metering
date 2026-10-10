@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import {
-  ArgumentsHost, Body, Catch, Controller, Delete, ExceptionFilter, Get, Headers, HttpException, Inject, Injectable, Module, Param, Patch, Post, Req, Res,
+  ArgumentsHost, Body, Catch, Controller, Delete, ExceptionFilter, Get, Headers, HttpException, Inject, Injectable, Module, Param, Patch, Post, Query, Req, Res,
 } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import express, { Request, Response } from "express";
@@ -47,6 +47,33 @@ type AuthContext = { sub: string; organizationId: string; role: Role; email: str
 type AuthedRequest = Request & { auth?: AuthContext };
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const cookieOptions = { httpOnly: true, sameSite: "lax" as const, secure: production, path: "/", maxAge: 30 * 86400000 };
+
+const analyticsRanges: Record<string, number> = { "24h": 24, "72h": 72, "7d": 168, "30d": 720 };
+const eventSelect = `SELECT e.id,e.idempotency_key,e.metric,e.quantity::bigint AS quantity,e.occurred_at,e.created_at,e.dimensions,
+  o.published_at,p.processed_at
+  FROM usage_events e
+  LEFT JOIN outbox o ON o.topic='usage.recorded' AND o.payload->>'id'=e.id::text
+  LEFT JOIN processed_events p ON p.consumer='usage-aggregate' AND p.event_id=e.id`;
+
+function serializeEvent(row: Record<string, any>) {
+  const iso = (value: unknown) => (value ? (value instanceof Date ? value : new Date(String(value))).toISOString() : null);
+  const processedAt = iso(row.processed_at);
+  const publishedAt = iso(row.published_at);
+  const ingestedAt = iso(row.created_at)!;
+  return {
+    id: String(row.id),
+    idempotencyKey: String(row.idempotency_key),
+    metric: String(row.metric),
+    quantity: Number(row.quantity),
+    occurredAt: iso(row.occurred_at)!,
+    ingestedAt,
+    publishedAt,
+    processedAt,
+    status: processedAt ? "processed" : publishedAt ? "queued" : "pending",
+    latencyMs: processedAt ? new Date(processedAt).getTime() - new Date(ingestedAt).getTime() : null,
+    dimensions: row.dimensions ?? {},
+  };
+}
 
 function requireWritableWorkspace() {
   if (isPublicDemo()) throw new HttpException("This action is disabled in the protected public demo", 403);
@@ -276,7 +303,7 @@ export class AppController {
       const c = await authorize(req);
       const plan = await this.billing.entitlements(c.organizationId);
       const usage = await tenantTransaction(c.organizationId, c.sub, async (db) =>
-        (await db.query("SELECT metric,sum(quantity)::bigint AS used FROM usage_aggregates WHERE bucket_start>=date_trunc('month',now()) GROUP BY metric")).rows,
+        (await db.query("SELECT metric,sum(quantity)::bigint AS used FROM usage_aggregates WHERE organization_id=$1 AND bucket_start>=date_trunc('month',now()) GROUP BY metric", [c.organizationId])).rows,
       );
       return { plan, usage, organizationId: c.organizationId };
     } catch (error) {
@@ -286,9 +313,204 @@ export class AppController {
   }
 
   @Get("analytics/usage")
-  async usageAnalytics(@Req() req: AuthedRequest) {
+  async usageAnalytics(@Req() req: AuthedRequest, @Query("range") range?: string, @Query("granularity") granularity?: string) {
     const c = await authorize(req);
-    return analytics.usage(c.organizationId, new Date(new Date().getFullYear(), new Date().getMonth(), 1), new Date());
+    if (!range) return analytics.usage(c.organizationId, new Date(new Date().getFullYear(), new Date().getMonth(), 1), new Date());
+    const hours = analyticsRanges[range];
+    if (!hours) throw new HttpException(`range must be one of ${Object.keys(analyticsRanges).join(", ")}`, 400);
+    const unit = granularity === "day" ? "day" : "hour";
+    return tenantTransaction(c.organizationId, c.sub, async (db) => (await db.query(
+      `SELECT metric,date_trunc($1,bucket_start) AS bucket,sum(quantity)::bigint AS quantity FROM usage_aggregates
+       WHERE organization_id=$3 AND bucket_start >= date_trunc('hour',now()) - make_interval(hours => $2) GROUP BY 1,2 ORDER BY 2,1`,
+      [unit, hours - 1, c.organizationId],
+    )).rows.map((row) => ({ metric: row.metric, bucket: row.bucket, quantity: Number(row.quantity) })));
+  }
+
+  @Get("ops/pipeline")
+  async pipeline(@Req() req: AuthedRequest) {
+    const c = await authorize(req);
+    const [tenant, queue, deadLetters] = await Promise.all([
+      tenantTransaction(c.organizationId, c.sub, async (db) => {
+        const outbox = await db.query(
+          `SELECT count(*) FILTER (WHERE published_at IS NULL)::int AS pending,
+             coalesce(extract(epoch FROM now()-min(created_at) FILTER (WHERE published_at IS NULL))*1000,0)::float AS oldest_ms,
+             count(*) FILTER (WHERE published_at > now()-interval '1 hour')::int AS published_1h
+           FROM outbox WHERE organization_id=$1`,
+          [c.organizationId],
+        );
+        const throughput = await db.query(
+          `SELECT date_trunc('minute',created_at) AS minute,count(*)::int AS events,sum(quantity)::bigint AS units
+           FROM usage_events WHERE organization_id=$1 AND created_at > now()-interval '60 minutes' GROUP BY 1 ORDER BY 1`,
+          [c.organizationId],
+        );
+        const processing = await db.query(
+          `SELECT count(*)::int AS ingested,count(p.event_id)::int AS processed,
+             percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM p.processed_at-e.created_at)*1000) AS p50_ms,
+             percentile_cont(0.95) WITHIN GROUP (ORDER BY extract(epoch FROM p.processed_at-e.created_at)*1000) AS p95_ms,
+             percentile_cont(0.99) WITHIN GROUP (ORDER BY extract(epoch FROM p.processed_at-e.created_at)*1000) AS p99_ms
+           FROM usage_events e LEFT JOIN processed_events p ON p.consumer='usage-aggregate' AND p.event_id=e.id
+           WHERE e.organization_id=$1 AND e.created_at > now()-interval '24 hours'`,
+          [c.organizationId],
+        );
+        const buckets = await db.query("SELECT count(*)::int AS buckets,max(bucket_start) AS latest FROM usage_aggregates WHERE organization_id=$1", [c.organizationId]);
+        return { outbox: outbox.rows[0], throughput: throughput.rows, processing: processing.rows[0], aggregates: buckets.rows[0] };
+      }),
+      usageQueue.getJobCounts("waiting", "active", "completed", "failed", "delayed").catch(() => null),
+      dlq.getJobCounts("waiting", "failed").catch(() => null),
+    ]);
+    const now = Date.now();
+    const perMinute = new Map(tenant.throughput.map((row) => [new Date(row.minute).getTime(), row]));
+    const start = Math.floor(now / 60000) * 60000 - 59 * 60000;
+    const throughput = Array.from({ length: 60 }, (_, index) => {
+      const minute = start + index * 60000;
+      const row = perMinute.get(minute);
+      return { minute: new Date(minute).toISOString(), events: row?.events ?? 0, units: Number(row?.units ?? 0) };
+    });
+    const round = (value: unknown) => (value == null ? null : Math.round(Number(value)));
+    return {
+      generatedAt: new Date(now).toISOString(),
+      outbox: { pending: tenant.outbox.pending, oldestMs: Math.round(tenant.outbox.oldest_ms), publishedLastHour: tenant.outbox.published_1h },
+      queue: queue ? { ...queue, available: true } : { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0, available: false },
+      deadLetter: deadLetters ? { depth: (deadLetters.waiting ?? 0) + (deadLetters.failed ?? 0), available: true } : { depth: 0, available: false },
+      processing: {
+        ingested24h: tenant.processing.ingested,
+        processed24h: tenant.processing.processed,
+        backlog: tenant.processing.ingested - tenant.processing.processed,
+        p50Ms: round(tenant.processing.p50_ms),
+        p95Ms: round(tenant.processing.p95_ms),
+        p99Ms: round(tenant.processing.p99_ms),
+      },
+      aggregates: { buckets: tenant.aggregates.buckets, latestBucket: tenant.aggregates.latest },
+      throughput,
+    };
+  }
+
+  @Get("usage/events")
+  async usageEvents(@Req() req: AuthedRequest, @Query("limit") limit?: string, @Query("metric") metric?: string, @Query("source") source?: string) {
+    const c = await authorize(req);
+    const size = Math.min(200, Math.max(1, Number(limit) || 50));
+    return tenantTransaction(c.organizationId, c.sub, async (db) => (await db.query(
+      `${eventSelect} WHERE e.organization_id=$4 AND ($1::text IS NULL OR e.metric=$1) AND ($2::text IS NULL OR e.dimensions->>'source'=$2)
+       ORDER BY e.created_at DESC LIMIT $3`,
+      [metric || null, source || null, size, c.organizationId],
+    )).rows.map(serializeEvent));
+  }
+
+  @Get("usage/events/:id/trace")
+  async usageEventTrace(@Req() req: AuthedRequest, @Param("id") id: string) {
+    const c = await authorize(req);
+    if (!/^[0-9a-f-]{36}$/i.test(id)) throw new HttpException("invalid event id", 400);
+    return tenantTransaction(c.organizationId, c.sub, async (db) => {
+      const found = await db.query(`${eventSelect} WHERE e.id=$1 AND e.organization_id=$2`, [id, c.organizationId]);
+      if (!found.rows[0]) throw new HttpException("event not found", 404);
+      const event = serializeEvent(found.rows[0]);
+      const bucket = await db.query(
+        "SELECT bucket_start,quantity::bigint AS quantity FROM usage_aggregates WHERE organization_id=$3 AND metric=$1 AND bucket_start=date_trunc('hour',$2::timestamptz)",
+        [event.metric, event.occurredAt, c.organizationId],
+      );
+      const at = (value: string | null) => (value ? new Date(value).getTime() : null);
+      const ingested = at(event.ingestedAt)!;
+      const stages = [
+        { stage: "accepted", label: "Validated, quota reserved, row + outbox committed", at: event.ingestedAt, offsetMs: 0 },
+        { stage: "published", label: "Outbox relay enqueued BullMQ job", at: event.publishedAt, offsetMs: event.publishedAt ? at(event.publishedAt)! - ingested : null },
+        { stage: "processed", label: "Worker deduplicated via processed_events", at: event.processedAt, offsetMs: event.processedAt ? at(event.processedAt)! - ingested : null },
+        { stage: "aggregated", label: "Folded into hourly usage_aggregates bucket", at: event.processedAt && bucket.rows[0] ? event.processedAt : null, offsetMs: event.processedAt && bucket.rows[0] ? at(event.processedAt)! - ingested : null },
+      ];
+      return {
+        event,
+        stages,
+        bucket: bucket.rows[0] ? { start: bucket.rows[0].bucket_start, quantity: Number(bucket.rows[0].quantity) } : null,
+      };
+    });
+  }
+
+  @Get("quota/status")
+  async quotaStatus(@Req() req: AuthedRequest) {
+    const c = await authorize(req);
+    const plan = await this.billing.entitlements(c.organizationId);
+    const entitlements: Record<string, number> = plan?.entitlements ?? {};
+    const { rows, seats } = await tenantTransaction(c.organizationId, c.sub, async (db) => ({
+      rows: (await db.query(
+        `SELECT metric,
+           coalesce(sum(quantity) FILTER (WHERE bucket_start >= date_trunc('month',now())),0)::bigint AS month_to_date,
+           coalesce(sum(quantity) FILTER (WHERE bucket_start >= now()-interval '24 hours'),0)::bigint AS last_24h,
+           coalesce(sum(quantity) FILTER (WHERE bucket_start >= now()-interval '48 hours' AND bucket_start < now()-interval '24 hours'),0)::bigint AS previous_24h
+         FROM usage_aggregates WHERE organization_id=$1 AND bucket_start >= least(date_trunc('month',now()),now()-interval '48 hours') GROUP BY metric`,
+        [c.organizationId],
+      )).rows,
+      seats: Number((await db.query("SELECT count(*)::int AS count FROM memberships WHERE organization_id=$1", [c.organizationId])).rows[0].count),
+    }));
+    const now = new Date();
+    const periodEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+    const hoursLeft = (periodEnd.getTime() - now.getTime()) / 3600000;
+    const metrics = await Promise.all(Object.entries(entitlements).map(async ([metric, rawLimit]) => {
+      const limit = Number(rawLimit);
+      const row = rows.find((item) => item.metric === metric);
+      const used = metric === "seats" ? seats : Number(row?.month_to_date ?? 0);
+      const last24h = Number(row?.last_24h ?? 0);
+      const previous24h = Number(row?.previous_24h ?? 0);
+      const burnPerHour = metric === "seats" ? 0 : last24h / 24;
+      const remaining = Math.max(0, limit - used);
+      const hoursToLimit = burnPerHour > 0 ? remaining / burnPerHour : null;
+      const redisState = await quota.snapshot(c.organizationId, metric).catch(() => null);
+      return {
+        metric,
+        limit,
+        used,
+        remaining,
+        percent: limit ? Math.min(100, Math.round((used / limit) * 1000) / 10) : 0,
+        last24h,
+        changePercent: previous24h ? Math.round(((last24h - previous24h) / previous24h) * 1000) / 10 : null,
+        burnPerHour: Math.round(burnPerHour),
+        projectedPeriodTotal: Math.round(used + burnPerHour * hoursLeft),
+        projectedExhaustionAt: hoursToLimit != null && hoursToLimit < hoursLeft ? new Date(now.getTime() + hoursToLimit * 3600000).toISOString() : null,
+        redis: redisState ? { used: redisState.used, reserved: redisState.reserved } : null,
+      };
+    }));
+    return { period: { start: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(), end: periodEnd.toISOString() }, softAlertPercent: 80, metrics };
+  }
+
+  @Get("ops/metrics")
+  async opsMetrics(@Req() req: AuthedRequest) {
+    await authorize(req);
+    const metrics = await registry.getMetricsAsJSON();
+    const find = (name: string) => metrics.find((metric) => metric.name === name)?.values ?? [];
+    const sumBy = (name: string, label: string) => find(name).reduce<Record<string, number>>((totals, item) => {
+      const key = String(item.labels[label] ?? "unknown");
+      totals[key] = (totals[key] ?? 0) + Number(item.value);
+      return totals;
+    }, {});
+    const histogram = find("fb3_http_duration_seconds") as Array<{ labels: Record<string, string | number>; value: number; metricName?: string }>;
+    const buckets = new Map<string, number>();
+    for (const item of histogram.filter((entry) => entry.metricName === "fb3_http_duration_seconds_bucket")) {
+      const le = String(item.labels.le);
+      buckets.set(le, (buckets.get(le) ?? 0) + Number(item.value));
+    }
+    const count = histogram.filter((entry) => entry.metricName === "fb3_http_duration_seconds_count").reduce((total, entry) => total + Number(entry.value), 0);
+    const sum = histogram.filter((entry) => entry.metricName === "fb3_http_duration_seconds_sum").reduce((total, entry) => total + Number(entry.value), 0);
+    const status = histogram.filter((entry) => entry.metricName === "fb3_http_duration_seconds_count").reduce<Record<string, number>>((totals, entry) => {
+      const key = `${String(entry.labels.status).charAt(0)}xx`;
+      totals[key] = (totals[key] ?? 0) + Number(entry.value);
+      return totals;
+    }, {});
+    const gauge = (name: string) => Number(find(name)[0]?.value ?? 0);
+    return {
+      uptimeSeconds: Math.round(process.uptime()),
+      quotaDecisions: sumBy("fb3_quota_decisions_total", "decision"),
+      usageResults: sumBy("fb3_usage_events_total", "result"),
+      webhooks: sumBy("fb3_stripe_webhooks_total", "result"),
+      http: {
+        requests: count,
+        averageMs: count ? Math.round((sum / count) * 10000) / 10 : 0,
+        status,
+        latencyBuckets: [...buckets.entries()].map(([le, cumulative]) => ({ le, cumulative })),
+      },
+      process: {
+        residentMemoryBytes: gauge("process_resident_memory_bytes"),
+        heapUsedBytes: gauge("nodejs_heap_size_used_bytes"),
+        eventLoopLagSeconds: gauge("nodejs_eventloop_lag_seconds"),
+      },
+    };
   }
 
   @Post("usage/events")
@@ -300,7 +522,7 @@ export class AppController {
       const demoRateKey = `public-demo-events:${new Date().toISOString().slice(0, 10)}`;
       const demoEvents = await redis.incr(demoRateKey);
       if (demoEvents === 1) await redis.expire(demoRateKey, 86400);
-      if (demoEvents > 50) throw new HttpException("The public demo simulation limit has been reached for today", 429);
+      if (demoEvents > Number(process.env.PUBLIC_DEMO_DAILY_EVENTS ?? 500)) throw new HttpException("The public demo simulation limit has been reached for today", 429);
     }
     const plan = await this.billing.entitlements(c.organizationId);
     const limit = Number(plan?.entitlements?.[event.metric] ?? 0);
@@ -334,7 +556,7 @@ export class AppController {
   async members(@Req() req: AuthedRequest) {
     const c = await authorize(req);
     return tenantTransaction(c.organizationId, c.sub, async (db) =>
-      (await db.query("SELECT u.id,u.name,u.email,m.role FROM memberships m JOIN users u ON u.id=m.user_id ORDER BY u.name")).rows,
+      (await db.query("SELECT u.id,u.name,u.email,m.role FROM memberships m JOIN users u ON u.id=m.user_id WHERE m.organization_id=$1 ORDER BY u.name", [c.organizationId])).rows,
     );
   }
 
@@ -367,7 +589,7 @@ export class AppController {
   @Get("invitations")
   async invitations(@Req() req: AuthedRequest) {
     const c = await authorize(req, ["owner", "admin"]);
-    return tenantTransaction(c.organizationId, c.sub, async (db) => (await db.query("SELECT id,email,role,expires_at,accepted_at,revoked_at FROM invitations ORDER BY expires_at DESC")).rows);
+    return tenantTransaction(c.organizationId, c.sub, async (db) => (await db.query("SELECT id,email,role,expires_at,accepted_at,revoked_at FROM invitations WHERE organization_id=$1 ORDER BY expires_at DESC", [c.organizationId])).rows);
   }
 
   @Post("invitations")
@@ -422,7 +644,7 @@ export class AppController {
   @Get("teams")
   async teams(@Req() req: AuthedRequest) {
     const c = await authorize(req);
-    return tenantTransaction(c.organizationId, c.sub, async (db) => (await db.query(`SELECT t.id,t.name,count(tm.user_id)::int member_count FROM teams t LEFT JOIN team_members tm ON tm.team_id=t.id GROUP BY t.id ORDER BY t.name`)).rows);
+    return tenantTransaction(c.organizationId, c.sub, async (db) => (await db.query(`SELECT t.id,t.name,count(tm.user_id)::int member_count FROM teams t LEFT JOIN team_members tm ON tm.team_id=t.id WHERE t.organization_id=$1 GROUP BY t.id ORDER BY t.name`, [c.organizationId])).rows);
   }
 
   @Post("teams")
@@ -492,7 +714,7 @@ export class AppController {
   @Get("admin/overrides")
   async overrides(@Req() req: AuthedRequest) {
     const c = await authorize(req, ["owner", "admin"]);
-    return tenantTransaction(c.organizationId, c.sub, async (db) => (await db.query("SELECT * FROM entitlement_overrides ORDER BY ends_at DESC")).rows);
+    return tenantTransaction(c.organizationId, c.sub, async (db) => (await db.query("SELECT * FROM entitlement_overrides WHERE organization_id=$1 ORDER BY ends_at DESC", [c.organizationId])).rows);
   }
 
   @Post("admin/overrides")
@@ -529,7 +751,7 @@ export class AppController {
   @Get("admin/audit")
   async auditLog(@Req() req: AuthedRequest) {
     const c = await authorize(req, ["owner", "admin"]);
-    return tenantTransaction(c.organizationId, c.sub, async (db) => (await db.query("SELECT * FROM audit_log ORDER BY created_at DESC LIMIT 200")).rows);
+    return tenantTransaction(c.organizationId, c.sub, async (db) => (await db.query("SELECT * FROM audit_log WHERE organization_id=$1 ORDER BY created_at DESC LIMIT 200", [c.organizationId])).rows);
   }
 
   @Get("admin/dlq")
@@ -554,7 +776,7 @@ export class AppController {
   @Get("billing/invoices")
   async invoices(@Req() req: AuthedRequest) {
     const c = await authorize(req);
-    return tenantTransaction(c.organizationId, c.sub, async (db) => (await db.query("SELECT * FROM invoices ORDER BY stripe_event_created DESC")).rows);
+    return tenantTransaction(c.organizationId, c.sub, async (db) => (await db.query("SELECT * FROM invoices WHERE organization_id=$1 ORDER BY stripe_event_created DESC", [c.organizationId])).rows);
   }
 
   @Get("billing/invoice-preview")
@@ -646,6 +868,7 @@ export async function createApp() {
       callback(null, allowed);
     },
     credentials: true,
+    exposedHeaders: ["x-request-id"],
   });
   return app;
 }

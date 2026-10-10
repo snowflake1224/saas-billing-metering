@@ -13,4 +13,12 @@ describe("atomic quota reservations", () => {
     expect(results.filter((r) => r.allowed)).toHaveLength(50);
     expect(Math.max(...results.map((r) => r.reserved))).toBe(50);
   });
+
+  it("snapshots committed and reserved units", async () => {
+    const org = randomUUID();
+    await quota.reserve(org, "ai_tokens", 30, 100);
+    await quota.reserve(org, "ai_tokens", 20, 100);
+    await quota.commit(org, "ai_tokens", 30);
+    expect(await quota.snapshot(org, "ai_tokens")).toMatchObject({ used: 30, reserved: 20 });
+  });
 });
