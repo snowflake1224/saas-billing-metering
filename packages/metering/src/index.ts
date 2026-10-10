@@ -37,6 +37,13 @@ export class QuotaService {
     await this.redis.multi().decrby(`${prefix}:reserved`, quantity).incrby(`${prefix}:used`, quantity).exec();
   }
 
+  async snapshot(orgId: string, metric: string) {
+    const period = new Date().toISOString().slice(0, 7);
+    const prefix = `quota:${orgId}:${metric}:${period}`;
+    const [used, reserved] = await this.redis.mget(`${prefix}:used`, `${prefix}:reserved`);
+    return { period, used: Number(used ?? 0), reserved: Number(reserved ?? 0) };
+  }
+
   async release(orgId: string, metric: string, quantity: number) {
     const period = new Date().toISOString().slice(0, 7);
     const key = `quota:${orgId}:${metric}:${period}:reserved`;

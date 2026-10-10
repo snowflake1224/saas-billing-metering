@@ -62,6 +62,64 @@ describe("API integration", () => {
     expect(duplicate.body).toMatchObject({ duplicate: true });
   });
 
+  it("lists recent raw events and traces one through the pipeline", async () => {
+    const key = `trace-test-${Date.now()}`;
+    await supertest(app.getHttpServer()).post("/usage/events").set("authorization", `Bearer ${accessToken}`)
+      .send({ idempotencyKey: key, metric: "ai_tokens", quantity: 5, occurredAt: new Date().toISOString(), dimensions: { source: "trace_test" } }).expect(201);
+    const list = await supertest(app.getHttpServer()).get("/usage/events?source=trace_test&limit=5")
+      .set("authorization", `Bearer ${accessToken}`).expect(200);
+    const event = list.body.find((item: { idempotencyKey: string }) => item.idempotencyKey === key);
+    expect(event).toMatchObject({ metric: "ai_tokens", quantity: 5, status: "pending", dimensions: { source: "trace_test" } });
+    const trace = await supertest(app.getHttpServer()).get(`/usage/events/${event.id}/trace`)
+      .set("authorization", `Bearer ${accessToken}`).expect(200);
+    expect(trace.body.stages.map((stage: { stage: string }) => stage.stage)).toEqual(["accepted", "published", "processed", "aggregated"]);
+    expect(trace.body.stages[0].offsetMs).toBe(0);
+    await supertest(app.getHttpServer()).get("/usage/events/not-a-uuid/trace").set("authorization", `Bearer ${accessToken}`).expect(400);
+  });
+
+  it("reports pipeline, quota, ranged analytics, and runtime metrics", async () => {
+    const auth = { authorization: `Bearer ${accessToken}` };
+    const pipeline = await supertest(app.getHttpServer()).get("/ops/pipeline").set(auth).expect(200);
+    expect(pipeline.body.throughput).toHaveLength(60);
+    expect(pipeline.body.outbox).toEqual(expect.objectContaining({ pending: expect.any(Number), oldestMs: expect.any(Number) }));
+    expect(pipeline.body.processing).toHaveProperty("p95Ms");
+
+    const quotaStatus = await supertest(app.getHttpServer()).get("/quota/status").set(auth).expect(200);
+    const requests = quotaStatus.body.metrics.find((item: { metric: string }) => item.metric === "api_requests");
+    expect(requests).toEqual(expect.objectContaining({ limit: 1000000, used: expect.any(Number), burnPerHour: expect.any(Number) }));
+    expect(requests.redis).toEqual(expect.objectContaining({ used: expect.any(Number), reserved: expect.any(Number) }));
+
+    const ranged = await supertest(app.getHttpServer()).get("/analytics/usage?range=7d&granularity=day").set(auth).expect(200);
+    expect(new Set(ranged.body.map((row: { bucket: string }) => row.bucket)).size).toBeLessThanOrEqual(8);
+    await supertest(app.getHttpServer()).get("/analytics/usage?range=1y").set(auth).expect(400);
+
+    const metrics = await supertest(app.getHttpServer()).get("/ops/metrics").set(auth).expect(200);
+    expect(metrics.body.quotaDecisions.allow).toBeGreaterThan(0);
+    expect(metrics.body.http.requests).toBeGreaterThan(0);
+  });
+
+  it("scopes raw events to the caller's tenant", async () => {
+    const other = await pool.query(
+      `INSERT INTO organizations(name,slug) VALUES('Isolation Probe','isolation-probe')
+       ON CONFLICT(slug) DO UPDATE SET name=excluded.name RETURNING id`,
+    );
+    const otherOrg = other.rows[0].id;
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('app.organization_id',$1,true)", [otherOrg]);
+      await client.query(
+        `INSERT INTO usage_events(organization_id,idempotency_key,metric,quantity,occurred_at,dimensions)
+         VALUES($1,'isolation-probe-event','api_requests',1,now(),'{"source":"isolation_probe"}') ON CONFLICT DO NOTHING`,
+        [otherOrg],
+      );
+      await client.query("COMMIT");
+    } catch (error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+    const list = await supertest(app.getHttpServer()).get("/usage/events?source=isolation_probe")
+      .set("authorization", `Bearer ${accessToken}`).expect(200);
+    expect(list.body).toEqual([]);
+  });
+
   it("rejects unsigned Stripe events unless explicit demo mode was enabled at boot", async () => {
     await supertest(app.getHttpServer()).post("/stripe/webhook").set("content-type", "application/json")
       .send({ id: "evt_unsigned", created: 1, type: "invoice.paid", data: { object: {} } }).expect(503);

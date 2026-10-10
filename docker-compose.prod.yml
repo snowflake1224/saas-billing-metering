@@ -50,6 +50,7 @@ services:
     build:
       args:
         NEXT_PUBLIC_API_URL: same-origin
+        API_INTERNAL_URL: http://api:4000
     networks:
       default: {}
       edge:

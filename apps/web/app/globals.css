@@ -16,6 +16,15 @@ button, select, input, a { outline: none; }
 button:focus-visible, select:focus-visible, input:focus-visible, a:focus-visible {
   box-shadow: 0 0 0 3px rgba(96, 165, 250, .45);
 }
+select, option, optgroup { background-color: #0d1424; color: #e8eef8; }
+option:checked { background-color: #1e3a8a; }
+input[type="range"] { accent-color: #3b82f6; }
+.code { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.flow-line { background: linear-gradient(90deg, transparent, rgba(34, 211, 238, .9), transparent); background-size: 50% 100%; background-repeat: no-repeat; animation: flow 1.4s linear infinite; }
+@keyframes flow { from { background-position: -50% 0; } to { background-position: 150% 0; } }
+@media (prefers-reduced-motion: reduce) { .flow-line { animation: none; } .metric:hover { transform: none; } }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, .18); border-radius: 8px; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 ::selection { background: rgba(59, 130, 246, .55); color: white; }
