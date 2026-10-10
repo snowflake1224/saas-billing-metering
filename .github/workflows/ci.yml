@@ -24,6 +24,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @fb3/database build
       - run: pnpm db:migrate && pnpm db:migrate && pnpm db:seed
       - run: pnpm lint
       - run: pnpm typecheck
