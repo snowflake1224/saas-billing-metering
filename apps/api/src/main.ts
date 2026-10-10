@@ -641,7 +641,7 @@ export async function createApp() {
     next();
   });
   app.enableCors({
-    origin: (origin, callback) => {
+    origin: (origin: string | undefined, callback: (error: Error | null, allow?: boolean) => void) => {
       const allowed = !origin || origin === webOrigin || (!production && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin));
       callback(null, allowed);
     },
