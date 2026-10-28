@@ -1,0 +1,6 @@
+apiVersion: 1
+providers:
+  - name: fb3
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

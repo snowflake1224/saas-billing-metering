@@ -36,11 +36,13 @@ const log = pino({ level: process.env.LOG_LEVEL ?? "info", redact: ["req.headers
 
 const registry = new Registry();
 collectDefaultMetrics({ register: registry });
-const usageCounter = new Counter({ name: "fb3_usage_events_total", help: "Accepted usage events", labelNames: ["metric", "result"], registers: [registry] });
+const usageCounter = new Counter({ name: "fb3_usage_events_total", help: "Usage event ingest results (accepted, duplicate, error)", labelNames: ["metric", "result"], registers: [registry] });
 const webhookCounter = new Counter({ name: "fb3_stripe_webhooks_total", help: "Stripe webhook outcomes", labelNames: ["type", "result"], registers: [registry] });
 const quotaCounter = new Counter({ name: "fb3_quota_decisions_total", help: "Quota decisions", labelNames: ["metric", "decision"], registers: [registry] });
 const requestLatency = new Histogram({ name: "fb3_http_duration_seconds", help: "HTTP request latency", labelNames: ["method", "status"], registers: [registry] });
 const outboxGauge = new Gauge({ name: "fb3_outbox_unpublished", help: "Unpublished outbox events", registers: [registry] });
+const refreshOutboxGauge = () =>
+  pool.query("SELECT count(*)::int count FROM outbox WHERE published_at IS NULL").then((r) => outboxGauge.set(r.rows[0].count)).catch(() => undefined);
 
 type Role = "owner" | "admin" | "billing" | "member";
 type AuthContext = { sub: string; organizationId: string; role: Role; email: string };
@@ -194,12 +196,15 @@ export class AppController {
       healthcheck().catch(() => false),
       redis.ping().then(() => true).catch(() => false),
     ]);
-    await pool.query("SELECT count(*)::int count FROM outbox WHERE published_at IS NULL").then((r) => outboxGauge.set(r.rows[0].count)).catch(() => undefined);
+    await refreshOutboxGauge();
     return { status: postgres && redisStatus ? "ok" : "degraded", dependencies: { postgres, redis: redisStatus }, service: "api", time: new Date().toISOString() };
   }
 
   @Get("metrics")
-  async metrics(@Res() res: Response) { res.type(registry.contentType).send(await registry.metrics()); }
+  async metrics(@Res() res: Response) {
+    await refreshOutboxGauge();
+    res.type(registry.contentType).send(await registry.metrics());
+  }
 
   @Get("capabilities")
   async capabilities(@Req() req: AuthedRequest) {

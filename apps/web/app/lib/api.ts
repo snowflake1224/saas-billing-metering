@@ -18,25 +18,8 @@ export type Capabilities = {
   role: Role;
   permissions: { simulateUsage: boolean; checkoutPreview: boolean; manageWorkspace: boolean; manageBilling: boolean; replayJobs: boolean };
 };
-export type Member = { id: string; name: string; email: string; role: Role };
-export type Team = { id: string; name: string; member_count: number };
-export type Invoice = { id: string; status: string; currency: string; amount_due: number; amount_paid?: number; hosted_invoice_url?: string | null; period_start?: string | null; period_end?: string | null; stripe_event_created: string };
 export type UsageRow = { bucket: string; metric: string; quantity: number | string };
-export type Override = { id: string; key: string; value: string; reason: string; starts_at?: string; ends_at: string };
-export type Audit = { id: string; action: string; target_type: string; target_id?: string | null; actor_id?: string | null; metadata?: Record<string, unknown>; created_at: string };
-export type Job = { id: string; failedReason?: string; attemptsMade: number; data?: { error?: string; failedAt?: string; original?: Record<string, unknown> } };
-export type Plan = { code: string; name: string; price_cents: number | null; entitlements: Record<string, number> };
-export type InvoicePreview = { mode: string; currency: string; amountDue: number; lines: Array<{ description?: string | null; amount: number }> };
 export type Health = { status: string; dependencies: { postgres: boolean; redis: boolean }; time: string };
-export type Pipeline = {
-  generatedAt: string;
-  outbox: { pending: number; oldestMs: number; publishedLastHour: number };
-  queue: { waiting: number; active: number; completed: number; failed: number; delayed: number; available: boolean };
-  deadLetter: { depth: number; available: boolean };
-  processing: { ingested24h: number; processed24h: number; backlog: number; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null };
-  aggregates: { buckets: number; latestBucket: string | null };
-  throughput: Array<{ minute: string; events: number; units: number }>;
-};
 export type QuotaMetric = {
   metric: string; limit: number; used: number; remaining: number; percent: number; last24h: number; changePercent: number | null;
   burnPerHour: number; projectedPeriodTotal: number; projectedExhaustionAt: string | null; redis: { used: number; reserved: number } | null;
@@ -47,14 +30,6 @@ export type UsageEvent = {
   publishedAt: string | null; processedAt: string | null; status: "pending" | "queued" | "processed"; latencyMs: number | null; dimensions: Record<string, unknown>;
 };
 export type EventTrace = { event: UsageEvent; stages: Array<{ stage: string; label: string; at: string | null; offsetMs: number | null }>; bucket: { start: string; quantity: number } | null };
-export type OpsMetrics = {
-  uptimeSeconds: number;
-  quotaDecisions: Record<string, number>;
-  usageResults: Record<string, number>;
-  webhooks: Record<string, number>;
-  http: { requests: number; averageMs: number; status: Record<string, number>; latencyBuckets: Array<{ le: string; cumulative: number }> };
-  process: { residentMemoryBytes: number; heapUsedBytes: number; eventLoopLagSeconds: number };
-};
 export type ApiResult<T = unknown> = { ok: boolean; status: number; ms: number; requestId: string | null; body: T; method: string; path: string; at: number };
 
 export class SessionExpiredError extends Error {}
@@ -146,12 +121,6 @@ export function duration(ms: number | null | undefined) {
   if (ms < 60000) return `${(ms / 1000).toFixed(1)} s`;
   if (ms < 3600000) return `${Math.round(ms / 60000)} min`;
   return `${(ms / 3600000).toFixed(1)} h`;
-}
-export function bytes(value: number) {
-  const units = ["B", "KB", "MB", "GB"];
-  let index = 0;
-  while (value >= 1024 && index < units.length - 1) { value /= 1024; index++; }
-  return `${value.toFixed(index ? 1 : 0)} ${units[index]}`;
 }
 export function relative(value: string | number | Date | null | undefined) {
   if (!value) return "—";

@@ -58,6 +58,21 @@ services:
       edge:
         aliases:
           - billing-web
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: [metrics]
+    volumes: [./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro]
+    ports: ["9090:9090"]
+    depends_on: [api]
+  grafana:
+    image: grafana/grafana:11.2.0
+    profiles: [metrics]
+    environment: { GF_AUTH_ANONYMOUS_ENABLED: "true", GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer }
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3001:3000"]
+    depends_on: [prometheus]
 volumes: { pgdata: {}, redisdata: {} }
 networks:
   edge:

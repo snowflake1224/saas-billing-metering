@@ -1,0 +1,33 @@
+{
+  "uid": "fb3-usage",
+  "title": "Usage ingest",
+  "schemaVersion": 39,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "15s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Ingested events",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(fb3_usage_events_total{result=\"accepted\"})", "legendFormat": "ingested" }]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Duplicate events (not counted)",
+      "gridPos": { "x": 8, "y": 0, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "sum(fb3_usage_events_total{result=\"duplicate\"})", "legendFormat": "duplicate" }]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Queue depth (stored events waiting for the worker)",
+      "gridPos": { "x": 16, "y": 0, "w": 8, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [{ "refId": "A", "expr": "fb3_outbox_unpublished", "legendFormat": "queue depth" }]
+    }
+  ]
+}

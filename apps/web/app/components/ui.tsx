@@ -116,20 +116,6 @@ export function Card({ title, subtitle, icon, actions, children, className = "" 
   </article>;
 }
 
-export function Sparkline({ values, color = "#60a5fa", height = 36, className = "" }: { values: number[]; color?: string; height?: number; className?: string }) {
-  const gradient = useId();
-  if (values.length < 2) return <div style={{ height }} className={className}/>;
-  const max = Math.max(...values, 1);
-  const min = Math.min(...values, 0);
-  const span = max - min || 1;
-  const points = values.map((value, index) => `${(index / (values.length - 1)) * 100},${100 - ((value - min) / span) * 92 - 4}`);
-  return <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ height }} className={`w-full ${className}`} aria-hidden="true">
-    <defs><linearGradient id={gradient} x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor={color} stopOpacity=".35"/><stop offset="100%" stopColor={color} stopOpacity="0"/></linearGradient></defs>
-    <polygon points={`0,100 ${points.join(" ")} 100,100`} fill={`url(#${gradient})`}/>
-    <polyline points={points.join(" ")} fill="none" stroke={color} strokeWidth="2" vectorEffect="non-scaling-stroke"/>
-  </svg>;
-}
-
 export function Drawer({ open, title, onClose, children }: { open: boolean; title: ReactNode; onClose: () => void; children: ReactNode }) {
   useEffect(() => {
     if (!open) return;
