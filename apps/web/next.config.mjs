@@ -7,6 +7,12 @@ const config = {
   output: "standalone",
   reactStrictMode: true,
   allowedDevOrigins: ["127.0.0.1"],
+  async redirects() {
+    return [
+      { source: "/demo", destination: "/", permanent: false },
+      { source: "/demo/:path*", destination: "/", permanent: false },
+    ];
+  },
   async rewrites() {
     return [{ source: "/api/:path*", destination: `${apiInternalUrl}/:path*` }];
   },
