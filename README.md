@@ -29,6 +29,14 @@ To run the whole stack in containers instead: `docker network create portfolio-e
 
 The hourly total is derived from stored events instead of being the source of truth. A background worker keeps the hourly table up to date, so the dashboard reads a small table, not every event. The cost is that the two could drift. Because events are never edited, you can recompute any hour with one SQL sum over `usage_events` and compare it with the stored row. See [docs/architecture.md](docs/architecture.md).
 
+![Architecture Overview](docs/diagrams/architecture.svg)
+![Idempotency & Quota Sequence](docs/diagrams/idempotency-and-quota-sequence.svg)
+
+Deep-dive docs:
+- [Architecture](docs/architecture.md)
+- [Low-Level Design & Data Model](docs/low-level-design.md)
+- [Engineering FAQ](docs/engineering-faq.md)
+
 ## Metrics
 
 The API's `/metrics` endpoint exposes Prometheus counters. `fb3_usage_events_total{result="accepted"}` counts ingested events, `fb3_usage_events_total{result="duplicate"}` counts duplicates, and `fb3_outbox_unpublished` gives the queue depth (stored events not yet picked up by the worker). `docker compose --profile metrics up` adds Prometheus (:9090) and one local Grafana board (:3001) with those three panels.
@@ -44,6 +52,15 @@ An invoice can be built from the hourly totals; Stripe would charge that amount.
 ## What I would add in a real account
 
 There is no Terraform here. The demo runs this Compose file on a single shared host. In a real account I would add one VM, a managed Postgres, a managed Redis, and secrets in an env file on that VM, all described in code.
+
+## Architecture & Deep-Dive Docs
+
+![Architecture Overview](docs/diagrams/architecture.svg)
+![Idempotency & Quota Sequence](docs/diagrams/idempotency-and-quota-sequence.svg)
+
+- [Architecture](docs/architecture.md)
+- [Low-Level Design & Data Model](docs/low-level-design.md)
+- [Engineering FAQ](docs/engineering-faq.md)
 
 ## Checks
 

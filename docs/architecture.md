@@ -1,5 +1,12 @@
 # Architecture
 
+![SaaS Billing & Metering System Architecture](diagrams/architecture.svg)
+![Two-Phase Quota, Idempotency & Outbox Flow](diagrams/idempotency-and-quota-sequence.svg)
+
+See also:
+- [Low-Level Design & Data Model](low-level-design.md)
+- [Engineering FAQ](engineering-faq.md)
+
 ```text
 client -> POST /usage/events (idempotency key) -> store event -> worker -> hourly total -> dashboard
 ```
