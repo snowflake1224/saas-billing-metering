@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 520" role="img" aria-label="Idempotent Metering, Two-Phase Quota & Outbox Sequence">
+  <defs>
+    <linearGradient id="bg2" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0b1020"/>
+      <stop offset="100%" stop-color="#131b35"/>
+    </linearGradient>
+    <marker id="a2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="ag" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#10b981"/>
+    </marker>
+    <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#f59e0b"/>
+    </marker>
+    <style>
+      .t { font: 700 19px 'Inter', 'Segoe UI', system-ui, sans-serif; fill: #f8fafc; }
+      .s { font: 400 12px 'Inter', 'Segoe UI', system-ui, sans-serif; fill: #94a3b8; }
+      .actor { fill: #192446; stroke: #3b82f6; stroke-width: 1.4; rx: 8; }
+      .at { font: 600 12.5px 'Inter', 'Segoe UI', system-ui, sans-serif; fill: #f8fafc; text-anchor: middle; }
+      .lane { stroke: #334155; stroke-width: 1.3; stroke-dasharray: 4 4; }
+      .msg { stroke: #38bdf8; stroke-width: 1.6; fill: none; marker-end: url(#a2); }
+      .msgg { stroke: #10b981; stroke-width: 1.6; fill: none; marker-end: url(#ag); }
+      .msgw { stroke: #f59e0b; stroke-width: 1.5; stroke-dasharray: 5 4; fill: none; marker-end: url(#ar); }
+      .lbl { font: 500 11px 'JetBrains Mono', monospace; fill: #e2e8f0; }
+      .note { fill: #11182d; stroke: #25345c; stroke-width: 1.2; rx: 8; }
+      .ns { font: 400 10.5px 'JetBrains Mono', monospace; fill: #94a3b8; }
+    </style>
+  </defs>
+
+  <rect width="1100" height="520" fill="url(#bg2)"/>
+  <text x="34" y="38" class="t">Two-Phase Quota Reservation, Idempotency &amp; Outbox Relay Flow</text>
+  <text x="34" y="58" class="s">Guarantees retried requests never double-count and Quota reservations never leak on duplicate or Postgres errors</text>
+
+  <!-- Actors -->
+  <rect x="44" y="82" width="150" height="38" class="actor"/><text x="119" y="106" class="at">SDK / Client</text>
+  <rect x="274" y="82" width="170" height="38" class="actor"/><text x="359" y="106" class="at">NestJS API (:4000)</text>
+  <rect x="524" y="82" width="170" height="38" class="actor"/><text x="609" y="106" class="at">Redis Quota Lua</text>
+  <rect x="774" y="82" width="140" height="38" class="actor"/><text x="844" y="106" class="at">Postgres RLS</text>
+  <rect x="944" y="82" width="126" height="38" class="actor"/><text x="1007" y="106" class="at">BullMQ Worker</text>
+
+  <line x1="119" y1="120" x2="119" y2="410" class="lane"/>
+  <line x1="359" y1="120" x2="359" y2="410" class="lane"/>
+  <line x1="609" y1="120" x2="609" y2="410" class="lane"/>
+  <line x1="844" y1="120" x2="844" y2="410" class="lane"/>
+  <line x1="1007" y1="120" x2="1007" y2="410" class="lane"/>
+
+  <path d="M 119 152 L 359 152" class="msg"/>
+  <text x="132" y="144" class="lbl">1. POST /usage/events (idempotencyKey)</text>
+
+  <path d="M 359 186 L 609 186" class="msg"/>
+  <text x="372" y="178" class="lbl">2. reserveLua(used + reserved + qty &lt;= limit)</text>
+
+  <path d="M 359 224 L 844 224" class="msgg"/>
+  <text x="372" y="216" class="lbl">3. SET LOCAL app.organization_id; INSERT usage_events ON CONFLICT NOTHING</text>
+
+  <path d="M 359 262 L 609 262" class="msgg"/>
+  <text x="372" y="254" class="lbl">4a. New row -&gt; INSERT outbox + quota.commit() (reserved -= qty, used += qty)</text>
+
+  <path d="M 359 298 L 609 298" class="msgw"/>
+  <text x="372" y="290" class="lbl">4b. Duplicate / error -&gt; quota.release() (reserved -= qty, no outbox row)</text>
+
+  <path d="M 359 332 L 119 332" class="msgg"/>
+  <text x="132" y="324" class="lbl">5. 201 {accepted | duplicate} + 80% softAlert warning</text>
+
+  <path d="M 1007 368 L 844 368" class="msg"/>
+  <text x="640" y="360" class="lbl">6. Outbox poll (SKIP LOCKED) -&gt; processed_events dedupe -&gt; hourly UPSERT</text>
+
+  <!-- Summary note -->
+  <rect x="44" y="426" width="1026" height="72" class="note"/>
+  <text x="64" y="452" class="ns">Reconciliation Safety Net: Every hour reconcileAndRepair() recomputes SUM(quantity) grouped by date_trunc('hour', occurred_at)</text>
+  <text x="64" y="474" class="ns">from immutable usage_events and corrects any aggregate drift or orphaned buckets. RLS + triggers prevent cross-tenant reads &amp; edits.</text>
+</svg>

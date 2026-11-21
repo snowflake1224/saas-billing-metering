@@ -1,0 +1,28 @@
+sequenceDiagram
+    participant C as Client
+    participant A as NestJS API
+    participant R as Redis (QuotaService Lua)
+    participant P as Postgres (FORCE RLS)
+    participant W as Worker (BullMQ + Outbox)
+
+    C->>A: POST /usage/events (idempotencyKey, metric, quantity)
+    A->>R: reserve(org, metric, qty, limit) via reserveLua
+    alt quota exceeded
+        R-->>A: {allowed: false}
+        A-->>C: 429 Quota Exceeded
+    else reserved
+        R-->>A: {allowed: true, softAlert}
+        A->>P: BEGIN + SET LOCAL app.organization_id
+        A->>P: INSERT usage_events ON CONFLICT DO NOTHING
+        alt duplicate key
+            A->>R: release(org, metric, qty)
+            A-->>C: 201 {duplicate: true}
+        else new event
+            A->>P: INSERT outbox ('usage.recorded') + COMMIT
+            A->>R: commit(org, metric, qty) -> decrby reserved, incrby used
+            A-->>C: 201 {accepted: true, eventId}
+        end
+    end
+    W->>P: SELECT outbox WHERE published_at IS NULL FOR UPDATE SKIP LOCKED
+    W->>W: BullMQ job -> INSERT processed_events ON CONFLICT DO NOTHING
+    W->>P: UPSERT usage_aggregates hourly bucket

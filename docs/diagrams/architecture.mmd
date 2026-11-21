@@ -1,0 +1,38 @@
+flowchart LR
+    subgraph Ingest["1. Synchronous Ingest Path (NestJS API :4000)"]
+        REQ["POST /usage/events (JWT + idempotencyKey)"]
+        QUOTA["Redis QuotaService Lua (reserveLua -> reserved += qty, TTL 300s)"]
+        TX["PostgreSQL RLS Tenant Transaction"]
+        EVT["usage_events (UNIQUE org_id + key, ON CONFLICT DO NOTHING)"]
+        OUT["outbox (topic: usage.recorded, published_at: NULL)"]
+        RLS["FORCE RLS (11 tables) + reject_mutation() immutable triggers"]
+    end
+
+    subgraph Relay["2. Outbox Relay, Worker & Self-Healing (Worker :4001)"]
+        POLL["Outbox Poller (1s, FOR UPDATE SKIP LOCKED)"]
+        BULL["BullMQ Queue: usage (concurrency 20, 5 retries exp backoff)"]
+        DLQ["BullMQ DLQ: usage-dlq (manual replay via /admin/dlq)"]
+        DEDUP["processed_events (consumer, event_id dedupe)"]
+        AGG["usage_aggregates (date_trunc('hour', occurred_at))"]
+        REC["Hourly Reconciler (reconcileAndRepair() over usage_events)"]
+    end
+
+    subgraph Billing["3. Entitlements, Stripe & Telemetry"]
+        STR["Stripe Webhooks (out-of-order guard: stripe_event_created)"]
+        PROM["Prometheus Counters/Histograms + Quota Burn-Rate API"]
+    end
+
+    REQ --> QUOTA
+    QUOTA -->|allowed| TX
+    TX --> EVT
+    TX --> OUT
+    EVT -. "duplicate" .->|"quota.release()"| QUOTA
+    EVT -. "accepted" .->|"quota.commit()"| QUOTA
+    OUT --> POLL
+    POLL --> BULL
+    BULL -->|after 5 failures| DLQ
+    BULL --> DEDUP
+    DEDUP --> AGG
+    AGG <--> REC
+    STR --> TX
+    AGG --> PROM
