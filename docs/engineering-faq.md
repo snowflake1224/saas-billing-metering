@@ -1,4 +1,4 @@
-# Architecture Deep-Dive & Interview Guide
+# Engineering FAQ
 
 This guide prepares engineering walkthroughs on the idempotent SaaS billing and usage metering architecture, concurrency guarantees, and production trade-offs.
 

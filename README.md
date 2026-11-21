@@ -35,7 +35,7 @@ The hourly total is derived from stored events instead of being the source of tr
 Deep-dive docs:
 - [Architecture](docs/architecture.md)
 - [Low-Level Design & Data Model](docs/low-level-design.md)
-- [Architecture Interview Guide](docs/interview-guide.md)
+- [Engineering FAQ](docs/engineering-faq.md)
 
 ## Metrics
 
@@ -60,7 +60,7 @@ There is no Terraform here. The demo runs this Compose file on a single shared h
 
 - [Architecture](docs/architecture.md)
 - [Low-Level Design & Data Model](docs/low-level-design.md)
-- [Architecture Interview Guide](docs/interview-guide.md)
+- [Engineering FAQ](docs/engineering-faq.md)
 
 ## Checks
 

@@ -5,7 +5,7 @@
 
 See also:
 - [Low-Level Design & Data Model](low-level-design.md)
-- [Architecture Interview Guide](interview-guide.md)
+- [Engineering FAQ](engineering-faq.md)
 
 ```text
 client -> POST /usage/events (idempotency key) -> store event -> worker -> hourly total -> dashboard
