@@ -28,16 +28,16 @@
 
   <rect width="1120" height="620" fill="url(#bg)"/>
   <text x="34" y="40" class="t">Multi-Tenant SaaS Billing &amp; Usage Metering Architecture</text>
-  <text x="34" y="60" class="s">PostgreSQL FORCE RLS (11 tables) · Two-Phase Redis Lua Quota · Transactional Outbox · BullMQ + DLQ · Hourly Reconciliation</text>
+  <text x="34" y="60" class="s">PostgreSQL FORCE RLS (11 tables) &#183; Two-Phase Redis Lua Quota &#183; Transactional Outbox &#183; BullMQ + DLQ &#183; Hourly Reconciliation</text>
 
-  <!-- Layer 1: API & Auth & Quota -->
+  <!-- Layer 1: API &amp; Auth &amp; Quota -->
   <rect x="34" y="82" width="1052" height="150" class="zone"/>
   <text x="50" y="104" class="zl">1. NestJS Control Plane &amp; Two-Phase Quota Gate (:4000)</text>
   <rect x="52" y="120" width="320" height="94" class="box"/>
   <text x="68" y="142" class="bt">Auth, RBAC &amp; Token Families</text>
-  <text x="68" y="160" class="bs">Argon2 passwords · 15m JWT access</text>
+  <text x="68" y="160" class="bs">Argon2 passwords &#183; 15m JWT access</text>
   <text x="68" y="177" class="bs">30d refresh cookie family reuse kill</text>
-  <text x="68" y="194" class="bs">Roles: owner · admin · billing · member</text>
+  <text x="68" y="194" class="bs">Roles: owner &#183; admin &#183; billing &#183; member</text>
 
   <rect x="400" y="120" width="336" height="94" class="box-warn"/>
   <text x="416" y="142" class="bt">Redis Lua QuotaService (@fb3/metering)</text>
@@ -47,7 +47,7 @@
 
   <rect x="764" y="120" width="304" height="94" class="box"/>
   <text x="780" y="142" class="bt">Stripe Billing &amp; Overrides</text>
-  <text x="780" y="160" class="bs">Signed webhooks · event ID dedupe</text>
+  <text x="780" y="160" class="bs">Signed webhooks &#183; event ID dedupe</text>
   <text x="780" y="177" class="bs">Out-of-order timestamp guard (&lt;=)</text>
   <text x="780" y="194" class="bs">Time-bounded entitlement overrides</text>
 
@@ -66,13 +66,13 @@
   <text x="596" y="353" class="bs">processed_events(consumer, event_id) enforces exact-once fold</text>
   <text x="596" y="370" class="bs">usage_aggregates(org_id, metric, date_trunc('hour', occurred_at))</text>
 
-  <!-- Layer 3: Async Worker, DLQ & Self-Healing -->
+  <!-- Layer 3: Async Worker, DLQ &amp; Self-Healing -->
   <rect x="34" y="436" width="1052" height="152" class="zone"/>
   <text x="50" y="458" class="zl">3. BullMQ Async Worker, Dead-Letter Replay &amp; Hourly Reconciler (:4001)</text>
   <rect x="52" y="474" width="320" height="96" class="box"/>
   <text x="68" y="496" class="bt">Outbox Relay &amp; BullMQ Consumer</text>
   <text x="68" y="514" class="bs">1s poll: FOR UPDATE SKIP LOCKED (100)</text>
-  <text x="68" y="531" class="bs">Concurrency=20 · 5 exp backoff retries</text>
+  <text x="68" y="531" class="bs">Concurrency=20 &#183; 5 exp backoff retries</text>
   <text x="68" y="548" class="bs">Moves exhausted jobs -&gt; usage-dlq</text>
 
   <rect x="400" y="474" width="336" height="96" class="box-db"/>
