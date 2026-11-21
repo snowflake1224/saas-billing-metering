@@ -13,7 +13,7 @@ test("demo sends a usage event and shows totals", async ({ page }) => {
   await signIn(page);
   await expect(page.getByText("Protected public demo")).toBeVisible();
   await expect(page.getByRole("button", { name: "Organization" })).toContainText("Acme Analytics");
-  await expect(page.getByText("Hourly totals")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Hourly totals" })).toBeVisible();
   await page.getByRole("button", { name: "Send usage event" }).click();
   await expect(page.getByRole("list", { name: "Recent simulator calls" })).toContainText("accepted", { timeout: 45_000 });
 
