@@ -18,7 +18,7 @@ test("demo sends a usage event and shows totals", async ({ page }) => {
   await expect(page.getByRole("list", { name: "Recent simulator calls" })).toContainText("accepted", { timeout: 45_000 });
 
   await nav(page, "Billing");
-  await expect(page.getByText("This month")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "This month" })).toBeVisible();
   await expect(page).toHaveURL(/section=billing/);
 });
 
