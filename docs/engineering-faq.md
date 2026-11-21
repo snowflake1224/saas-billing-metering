@@ -10,7 +10,7 @@ This guide prepares engineering walkthroughs on the idempotent SaaS billing and 
 
 ---
 
-## 2. Core Technical Interview Q&A
+## 2. Core Technical Q&A
 
 ### Q1: Why use two-phase Redis quota (`reserve` → `commit` / `release`) instead of just `INCRBY`?
 - If two requests arrive concurrently when quota is nearly full, a simple read-then-write race lets both pass (`used + qty <= limit`).
